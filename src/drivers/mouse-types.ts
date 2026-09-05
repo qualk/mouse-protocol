@@ -165,6 +165,7 @@ export interface MouseStatus {
   ninjutsoSlamClick?: "Low" | "Medium" | "High" | null;
   debounceMs?: number | null;
   sleepTimeout?: number | null;
+  deepSleepTimeout?: number | null;
   angleSnapping?: boolean | null;
   rippleControl?: boolean | null;
   slamclickFilter?: boolean | null;
