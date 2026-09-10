@@ -17,6 +17,10 @@
       "types": "./dist/atk/index.d.ts",
       "import": "./dist/atk/index.js"
     },
+    "./bitmouse": {
+      "types": "./dist/bitmouse/index.d.ts",
+      "import": "./dist/bitmouse/index.js"
+    },
     "./endgame-gear-we": {
       "types": "./dist/endgame-gear/wireless.d.ts",
       "import": "./dist/endgame-gear/wireless.js"
@@ -33,6 +37,10 @@
       "types": "./dist/fantech/index.d.ts",
       "import": "./dist/fantech/index.js"
     },
+    "./gearhub": {
+      "types": "./dist/gearhub/index.d.ts",
+      "import": "./dist/gearhub/index.js"
+    },
     "./keychron": {
       "types": "./dist/keychron/index.d.ts",
       "import": "./dist/keychron/index.js"
@@ -41,9 +49,17 @@
       "types": "./dist/lamzu/index.d.ts",
       "import": "./dist/lamzu/index.js"
     },
+    "./mchose": {
+      "types": "./dist/mchose/index.d.ts",
+      "import": "./dist/mchose/index.js"
+    },
     "./logitech": {
       "types": "./dist/logitech/index.d.ts",
       "import": "./dist/logitech/index.js"
+    },
+    "./microsoft": {
+      "types": "./dist/microsoft/index.d.ts",
+      "import": "./dist/microsoft/index.js"
     },
     "./moddo": {
       "types": "./dist/moddo/index.d.ts",
@@ -81,6 +97,10 @@
       "types": "./dist/teevolution/index.d.ts",
       "import": "./dist/teevolution/index.js"
     },
+    "./valkyrie": {
+      "types": "./dist/valkyrie/index.d.ts",
+      "import": "./dist/valkyrie/index.js"
+    },
     "./vgn": {
       "types": "./dist/vgn/index.d.ts",
       "import": "./dist/vgn/index.js"
@@ -101,6 +121,10 @@
       "types": "./dist/zaunkoenig/index.d.ts",
       "import": "./dist/zaunkoenig/index.js"
     },
+    "./corsair": {
+      "types": "./dist/corsair/index.d.ts",
+      "import": "./dist/corsair/index.js"
+    },
     "./drivers": {
       "types": "./dist/drivers/index.d.ts",
       "import": "./dist/drivers/index.js"
@@ -120,6 +144,14 @@
     "./glorious-classic": {
       "types": "./dist/glorious-classic/index.d.ts",
       "import": "./dist/glorious-classic/index.js"
+    },
+    "./ksnake": {
+      "types": "./dist/ksnake/index.d.ts",
+      "import": "./dist/ksnake/index.js"
+    },
+    "./hyperx": {
+      "types": "./dist/hyperx/index.d.ts",
+      "import": "./dist/hyperx/index.js"
     }
   },
   "scripts": {

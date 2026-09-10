@@ -24,9 +24,11 @@
       "@openmouse/protocol/endgame-gear-we": ["./src/endgame-gear/wireless.ts"],
       "@openmouse/protocol/endgame-gear-op1": ["./src/endgame-gear/op1.ts"],
       "@openmouse/protocol/finalmouse": ["./src/finalmouse/index.ts"],
+      "@openmouse/protocol/gearhub": ["./src/gearhub/index.ts"],
       "@openmouse/protocol/keychron": ["./src/keychron/index.ts"],
       "@openmouse/protocol/lamzu": ["./src/lamzu/index.ts"],
       "@openmouse/protocol/logitech": ["./src/logitech/index.ts"],
+      "@openmouse/protocol/mchose": ["./src/mchose/index.ts"],
       "@openmouse/protocol/moddo": ["./src/moddo/index.ts"],
       "@openmouse/protocol/orbital": ["./src/orbital/index.ts"],
       "@openmouse/protocol/pulsar": ["./src/pulsar/index.ts"],
@@ -39,7 +41,8 @@
       "@openmouse/protocol/wallhack": ["./src/wallhack/index.ts"],
       "@openmouse/protocol/wlmouse": ["./src/wlmouse/index.ts"],
       "@openmouse/protocol/wooting": ["./src/wooting/index.ts"],
-      "@openmouse/protocol/zaunkoenig": ["./src/zaunkoenig/index.ts"]
+      "@openmouse/protocol/zaunkoenig": ["./src/zaunkoenig/index.ts"],
+      "@openmouse/protocol/corsair": ["./src/corsair/index.ts"]
     }
   },
   "include": ["src/**/*"],

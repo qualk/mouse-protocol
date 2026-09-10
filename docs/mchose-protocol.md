@@ -1,0 +1,446 @@
+# MCHOSE protocol notes
+
+Vendor id **`0x3837`**. Reverse-engineered from MCHOSE's own **M HUB web
+driver** (`https://www.mchose.com.cn/assets/purify.es-DfJclCKp.js`, build
+`0cac79355`, 2026-09-04) and verified against an **A7 V2 Ultra+** over both its
+2.4 GHz receiver and its USB cable.
+
+## Which collection is the real one
+
+The mouse and its receiver both expose three interfaces and five collections.
+Two of them look like control channels and are not:
+
+| Usage page / usage | Reports | What it is |
+| --- | --- | --- |
+| `0x0001` / `0x0002` | — | boot mouse. Opens, but has **no readable feature report at any id 0x01–0xff**. |
+| `0x0001`/`0x0006`, `0x000c`/`0x0001` | — | keyboard + consumer control |
+| `0xff0b` / `0x0104` | in `0x2a` `0x2c` `0x2d`, out `0x2a` `0x2d`, feature `0x2a` `0x2b` | **firmware update.** The offer/response/payload triple is Microsoft's Component Firmware Update shape, and M HUB drives these ids against `/newBin/<model>.offer.bin`. Feature `0x2a` reads a firmware descriptor. Not config. |
+| `0xff01` / `0x0001` | in `0x11` `0x12`, out `0x13` `0x14`, feature `0x11` `0x12` `0x14` | **the configuration channel** |
+
+Output report `0x13` is declared but the firmware rejects every write to it;
+`0x14` accepts writes and never answers. Configuration does not use the output
+reports at all — it uses **feature** reports `0x11` and `0x12`.
+
+## Transport: everything is bit-inverted
+
+This is the detail that makes the channel look like a loopback if you miss it.
+M HUB's sender spells each command as a token string (`"11 06 00 00 …"`), takes
+the first token as the report id, and sends **every remaining token XOR 0xff**:
+
+```js
+sendFeatureReport(0x11, [cmd ^ 0xff, arg0 ^ 0xff, …])   // rest of the report stays 0x00
+receiveFeatureReport(0x11) -> [reportId, ~cmd, ~payload0, ~payload1, …]
+```
+
+The reply's byte 1 must un-invert to the command that was sent. Report `0x11`
+carries the short command set (command + 19 argument bytes); report `0x12`
+carries the long one (command + 63). Chrome zero-pads the rest of the 64-byte
+report, and the firmware leaves stale scratch bytes past the meaningful
+fields — including, at times, a leftover USB string descriptor — so a reply
+must be read only up to the length its schema defines.
+
+**Replies are not ready immediately.** Commands that cross the RF link answer
+empty at first; M HUB re-queues exactly `0x67` and `0x63` with a growing
+timeout. Poll until the same bytes come back twice before believing them — a
+single read routinely catches the buffer half-written.
+
+## Commands
+
+Only entries that carry an `order` string in M HUB's table are pollable
+commands. The rest (`0x02`, `0x0a`, `0x0b`, `0x2b`, `0x40`–`0x43`, `0x58`) have
+a parser but no order: they decode **unsolicited** reports, and polling them
+returns nothing.
+
+| Report | Command | Payload |
+| --- | --- | --- |
+| `0x11` | `0x03` | `bonded` u8, `vid` u16, `pid` u16, `connected` u8, `gameMode` u8 |
+| `0x11` | `0x04` | length-prefixed ASCII firmware version |
+| `0x11` | `0x06` | `vid` u16, `pid` u16, `fwVersion` u32, flags (3 bits mode, 1 bit status), `batteryLevel` u8, `chargeStatus` u8 |
+| `0x12` | `0x67` | the configuration blob, below |
+| `0x12` | `0x68 <n>` | profile name: index + NUL-terminated ASCII |
+| `0x11` | `0x58 <n>` | **write:** switch the active profile (0-based) |
+| `0x11` | `0x0a <enabled> <minutes>` | **write:** auto-sleep timer |
+| `0x11` | `0x42 …` | **write:** lift-off, processing toggles, performance mode, angle tuning |
+| `0x12` | `0x57 …` | **write:** the configuration blob, below |
+| `0x12` | `0x52 …` | **write:** reassign one button, see below |
+| `0x12` | `0x63 <n>` | button name: index, length, ASCII — a macro's name lives here |
+| `0x12` | `0x65 …`, `0x55 …` | paged macro data, not decoded here |
+
+**Macros are readable but not writable here.** A button set to type 4 keeps its
+assignment untouched, and its name is read with `0x12 0x63 <index>` (reply:
+index, length, ASCII) so it shows as `Macro: <name>` rather than a bare
+"Macro". Recording one needs the paged `0x12 0x65` / `0x12 0x55` data channel,
+which is not implemented. The mouse's own lighting
+commands go unused because this model has no LEDs — its RGB is on the charging
+base, which is a separate device with a separate protocol (see the MagDock
+section at the end).
+
+## Button remapping
+
+**Write:** `0x12 0x52` → `[command, buttonIndex, reserved, buttonType,
+value(u24, big-endian)]`. It is standalone — verified on hardware that it moves
+only the target button's four bytes and leaves DPI, polling and the other
+buttons alone.
+
+**Read:** the same assignments are mirrored in the config blob at offsets 20-43,
+six four-byte entries of `[(buttonIndex << 4) | buttonType, value(u24 BE)]`.
+
+Physical order is **left, middle, right, forward, back, DPI** — note this is not
+the order used by the other MCHOSE protocol family, which puts right at index 1.
+
+The type nibble selects which table the value is looked up in, so **type and
+value only mean anything together**: `0x010000` is left-click under type 1, "DPI
+switch" under type 5, and "switch to profile 1" under type 10.
+
+| Type | Meaning | Examples |
+| --- | --- | --- |
+| 0 | factory default | value must be 0 — the firmware's own reset |
+| 1 | mouse button | left `0x010000`, right `0x020000`, middle `0x040000`, forward `0x100000`, back `0x080000`, wheel up `0x000200`, wheel down `0x00fe00` |
+| 2 | keyboard | HID usage in the middle byte: F9 `0x004200`, A `0x000400`. The top byte is a modifier mask — Ctrl `0x01`, Shift `0x02`, Alt `0x04`, Win `0x08`, so Ctrl+C is `0x010600` and Alt+Tab `0x042b00` |
+| 3 | media | play/pause `0xcd0000`, next `0xb50000`, volume+ `0xe90000`, mute `0xe20000` |
+| 4 | macro | value indexes the stored macro |
+| 5 | DPI | switch `0x010000`, + `0x020000`, - `0x030000` |
+| 8 | system | copy `0x070106`, cut `0x07011b`, paste `0x070119`, brightness `0x0c6f00` |
+| 9 | disabled | `0xffffff` |
+| 10 | profile | profile 1-3 `0x010000`-`0x030000`, cycle `0x040000` |
+
+Type 7 exists in the vendor bundle but its table is empty.
+
+Verified on an A7 V2 Ultra+ by remapping the forward button through a mouse
+action, a media action and a keyboard key, then restoring — each read back
+correctly and the rest of the config stayed byte-identical. **Only ever test on
+a button you can spare**; index 0 is the left click.
+
+Worth knowing when reading a stock device: on the test hardware, forward and
+back were **not** on defaults — they shipped mapped to keyboard F9 and F10
+(type 2), while left, middle, right and DPI were type 0.
+
+`0x06` reports **the mouse's own product id**, even when the host is talking to
+a receiver. That is how a model is identified — see below.
+
+### `0x12 0x67` configuration
+
+| Offset | Field |
+| --- | --- |
+| 0 | profile index |
+| 1 | **wired** link: high nibble = polling index, low nibble = DPI stage |
+| 2 | **wireless** link: high nibble = polling index, low nibble = DPI stage |
+| 3 | reserved — **the stage table does not start here** |
+| 4 … 15 | six DPI stages, little-endian uint16 each |
+| 16 | stage count |
+| 17 | sensor flags |
+| 18 | key debounce |
+| 19 | sleep |
+
+Polling is a plain index into the model's rate list
+(`[125, 500, 1000, 2000, 4000, 8000]` on an 8K model) with no skipped value.
+
+Captured from the Ultra+ on its receiver while set to 1000 Hz and 1600 DPI:
+
+```
+00 30 20 00 40 06 20 03 40 06 80 0c 00 19 10 a4 01 80 00 00
+        ^^ wireless: rate index 2 (1000 Hz), stage 0
+     ^^ wired: rate index 3 (2000 Hz), stage 0
+              dpi stages: 1600 800 1600 3200 6400 42000
+```
+
+> **MCHOSE ships two contradictory schemas for this payload.** Its *read*
+> parser claims the wireless byte comes first with the DPI nibble high; its
+> *write* schema claims the wired byte comes first with the rate nibble high.
+> The write schema is the correct one, established by reading the same mouse at
+> two known settings: at 125 Hz the wireless byte read `0x00`, and after
+> changing to 1000 Hz it read `0x20`. Do not "fix" this to match the read
+> parser.
+
+### `0x12 0x57` — write the configuration
+
+The write payload is **exactly the read payload with the command byte in
+front**, which was confirmed by echoing a config back unchanged and observing
+no change. So a setting is applied by reading `0x67`, altering only the target
+field, and sending the whole thing back — which is what preserves button
+mappings and macros that a zero-filled partial write would wipe.
+
+Verified on hardware: wireless polling 1000 Hz → 500 Hz took effect and read
+back, then restored.
+
+## Profiles
+
+The mouse holds **three onboard profiles**, 0-based on the wire, switched with
+`0x11 0x58 <index>`. Each carries its own DPI stage table *and* its own pair of
+per-link rate/stage bytes, so DPI and polling both change with the profile.
+
+`0x67` takes **no profile argument** — passing one is ignored and it always
+answers for whichever profile is active. Reading another profile therefore means
+switching to it first, which changes the mouse's behaviour as a side effect.
+
+The device needs roughly half a second after a switch before it answers for the
+new profile; at 250 ms a read came back empty, at 600 ms all three were read
+reliably. Verified on an A7 V2 Ultra+ by walking 0 → 1 → 2 and back:
+
+```
+profile 0: wired 0x30  wireless 0x30  (2000 Hz, stage 0)
+profile 1: wired 0x32  wireless 0x22  (1000 Hz, stage 2)
+profile 2: wired 0x32  wireless 0x22  (1000 Hz, stage 2)
+```
+
+## The shared reply buffer will bite you
+
+Every command on this collection answers into **one buffer**, and a read issued
+before the firmware has refilled it returns *the previous command's reply*. In
+testing, a config read handed back a battery payload, which was then written
+back as configuration — the firmware rejected it, but nothing in the transport
+prevented the attempt.
+
+Two guards are required on every read:
+
+1. the reply's command echo must un-invert to the command that was sent, and
+2. the payload must be plausible for that command (a config reply always
+   carries a sane first DPI stage).
+
+Then poll until the same bytes arrive twice. The buffer also retains unrelated
+data — a USB string descriptor turned up in it more than once — so never trust
+bytes past the length a command's schema defines.
+
+## Identifying a model
+
+Host-facing product ids are shared across the whole A7 V2 family and identify a
+*link*, not a model:
+
+| PID | Link |
+| --- | --- |
+| `0x100b` | 2.4 GHz receiver |
+| `0x100a` | Bluetooth (capped at 1000 Hz) |
+| `0x1020` | 8K receiver |
+
+The model-specific id is the mouse's own, reported inside the `0x06` reply and
+used directly when the mouse is on a cable:
+
+| Model | Mouse PID | DPI max | LOD steps |
+| --- | --- | --- | --- |
+| A7 V2 Pro | `0x4018` | 26000 | 1 mm, 2 mm |
+| A7 V2 Pro+ | `0x4023` | 26000 | 1 mm, 2 mm |
+| A7 V2 Ultra | `0x4019` | 42000 | 0.7 mm, 1 mm, 2 mm |
+| A7 V2 Ultra+ | `0x4021` | 42000 | 0.7 mm, 1 mm, 2 mm |
+
+MCHOSE's own firmware-version table cross-checks this: the Ultra reports
+`5.44.2.4` and the Ultra+ `5.46.2.4`. The test hardware reported `5.46.2.4`.
+
+## Dead ends, so the next person can skip them
+
+- **The `0x4d`-magic framing in the same bundle is a different product line.**
+  It is a real MCHOSE protocol (`[4d][ver][flags][len][cmdLo][cmdHi][biz][seq]…`
+  plus an XOR checksum, commands `0x00xx` read / `0x01xx` write) but the A7 V2
+  has no report `0x4d`, and every variant of it was rejected by the hardware.
+  A second framing in that bundle starting `0xaa` belongs to the keyboard and
+  audio paths.
+- **CompX framing does not apply.** The older MCHOSE A5/AX5 line (VID `0x2023`,
+  reverse-engineered by [`Klegus/mchose-macos`](https://github.com/Klegus/mchose-macos)
+  from MCHOSE's `DriverCore.exe`) speaks CompX over usage page `0xffff` with
+  success byte `0xa1` — the framing already in `src/compx/codec.ts`. Different
+  VID, usage page and transport; CompX reads sent to an A7 V2 got nothing.
+- **`node-hid` cannot use the output reports**, and the boot-mouse collection
+  answers no feature report at any id. Neither is a missing-permission problem;
+  no MCHOSE process needs to be running.
+- **The mouse hub at `https://www.mchose.com.cn:9999/`** is where MCHOSE's mouse
+  UI lives, but it was unreachable during this work (port 443 on the same host
+  serves fine). Everything above came from the port-443 bundle, which carries
+  the mouse command table even though its UI targets keyboards and audio.
+
+## Sleep, debounce, and what this mouse does not have
+
+**Auto-sleep** has its own command, `0x11 0x0a` — `[enabled, minutes]` — and
+lands at **offset 19** of the config blob. Confirmed by writing `0x0a 01 09` and
+watching that byte go `0 -> 9`. It is applied slowly: at a 400 ms settle the
+write appeared to do nothing at all, and 1500 ms was needed before the new value
+read back. Zero minutes disables the timer.
+
+**Debounce** has no dedicated command; it rides in the config blob at **offset
+18** and is written with the ordinary `0x57` read-modify-write. Confirmed by
+writing 8 ms and then 4 ms — each read back, and byte 18 was the only byte that
+moved. The firmware takes 0-20 ms.
+
+Between them these two pin the tail of the blob: with offset 19 proven to be
+sleep, the schema's `dpiSum` / `sensor` / `keyDebounce` / `sleep` run of bytes
+16-19 is correctly aligned, even though `sensor` reads `0x80` where the vendor's
+defaults suggest `2`.
+
+**`0x11 0x42` is the performance command** — `lod`, `ripple`, `line`,
+`motionSync`, `gameMode`, `rotateOpen`, `rotateVal`. The vendor sends partial
+objects (just `lod`, say); anything omitted arrives as 0, and the toggles use
+1 = on / 2 = off, so 0 reads as "leave this field alone". Lift-off is the
+exception — index 0 is a real level, and the vendor always sends it.
+
+It has no entry in the read map, but **everything it sets is still readable**:
+the config blob's `sensor` byte (offset 17) is a bitfield holding lift-off *and*
+the three processing toggles. Mapped bit by bit on hardware by switching each on
+in turn:
+
+| Bit | Mask | Field |
+| --- | --- | --- |
+| 0-1 | `0x03` | lift-off step |
+| 2 | `0x04` | ripple control |
+| 3 | `0x08` | linear correction (angle snapping) |
+| 4 | `0x10` | motion sync |
+| 5 | `0x20` | unexplained; always clear on the test hardware |
+| 6-7 | `0xc0` | **performance mode**, three-way — see below |
+
+```
+0x80 -> 0x90  motion sync on
+0x90 -> 0x94  ripple on
+0x94 -> 0x9c  linear correction on
+```
+
+> **Lift-off is two bits, not three.** An early version of this driver masked
+> `0x07`, which reads ripple control as part of the level — a mouse with ripple
+> on and lift-off 0 reports level 4. Bits 5-6 are unexplained and bit 7 is
+> always set, so a writer must preserve the rest of the byte rather than assign
+> it.
+
+### Performance mode — field 7, and bits 6-7 of `sensor`
+
+M HUB presents this as **three radio buttons**, not a switch. Field 7 takes the
+mode number and the result lands in the top two bits of `sensor`:
+
+| Field 7 | `sensor` bits 6-7 | M HUB label |
+| --- | --- | --- |
+| 1 | `00` | Performance |
+| 2 | `10` | eSports |
+| 3 | `11` | Ultra |
+
+Note the gap — the stored pattern equals the mode number except for
+Performance, which stores `0`. Field 7 = `0` leaves the mode alone.
+
+> **This was first read as a boolean "game mode" on bit 7 alone**, because the
+> vendor bundle's other product line uses a checkbox there with `checked ? 2 : 1`.
+> That reading is wrong for the A7 V2: bit 6 is the other half of the field, and
+> what looked like "off" is really the Performance mode. A screenshot of M HUB's
+> own Rendimiento tab is what exposed it.
+
+**Angle tuning** is field 9 (`rotateVal`), gated by field 8 (`rotateOpen`):
+send `rotateOpen = 1` to apply a value, `0` to leave the angle as it is. It
+reads back from the config blob at **offset 49**.
+
+M HUB offers **−30° to +30°** and the byte is a plain two's-complement signed
+value (−15 stores `0xf1`). The firmware does **not** validate it — it stored
+`0xf1` and `0x8f` unchanged — so the range has to be enforced by the driver.
+M HUB also flags this control with "update the mouse firmware", so older
+firmware may ignore it.
+
+This command is the **slowest to apply** of any on the device. At a 1200 ms
+settle a read still returned the *previous* state — which looks exactly like the
+write being rejected. Allow ~2 s and re-send until the value follows; the driver
+retries three times. Verified on an A7 V2 Ultra+ that each toggle round-trips
+independently, that changing a toggle leaves lift-off alone (and vice versa),
+and that game mode and angle tuning both round-trip and restore.
+
+Step counts are per model: the Ultra and Ultra+ offer 0.7 mm, 1 mm and 2 mm
+(Low/Medium/High); the Pro and Pro+ only 1 mm and 2 mm (Low/High).
+
+**The A7 V2 Ultra+ has no controllable lighting.** The lighting read
+(`0x11 0x1b`, and the `0x11 0x2b` / `0x12 0x2d` write schemas alongside it) is
+present in the protocol for other MCHOSE models, but on this mouse the whole
+15-byte block reads back as zeros — enable, brightness, effect, both colours.
+Do not add lighting controls for it.
+
+## DPI stage count and profile names
+
+**Stage count** is `dpiSum` at config offset 16 and is written through the
+ordinary `0x57` read-modify-write. Confirmed: writing 4 read back as 4, only
+that byte moved, and a performance write in between did not disturb it. The
+test hardware reported `1` as its stored value even with six stage slots
+populated, so treat it as "how many the mouse cycles", not "how many are filled".
+
+**Profile names** come from `0x12 0x68 <index>` — the reply is the profile index
+followed by NUL-terminated ASCII. The test hardware answered `Config 1`,
+`Config 2`, `Config 3`. This is the same `0x68` listed with no parser in M HUB's
+read table, which is why it looked unused.
+
+## What this mouse cannot do
+
+- **The mouse itself has no controllable lighting.** Its lighting block
+  (`0x11 0x1b`, with the `0x11 0x2b` / `0x12 0x2d` write schemas) reads back all
+  zeros on an A7 V2 Ultra+. The RGB in this product family is on the **charging
+  base**, which is a separate device — see below. Do not conclude "no lighting"
+  from the mouse's own channel, as was done here at first.
+- **Independent Y-axis DPI is not writable.** The config blob carries a second
+  stage table (`dpiVal0-5`, offsets 51-62) that mirrors the X values, but
+  writing a different Y value through `0x57` is silently ignored — the payload
+  comes back unchanged. Whatever gates it is not the `val` byte at offset 50,
+  which also refuses writes. Treat Y DPI as read-only and equal to X.
+- **Macros** (`0x12 0x65`, and button type 4) are readable enough to preserve —
+  a button already carrying a macro decodes as "Macro" rather than being
+  clobbered — but recording one is not implemented.
+
+## The MagDock — a second device, a second protocol
+
+The magnetic charging base (`MCHOSE MagDock`, product id **`0x1012`**, usage
+page **`0xff00`**) is where this family's RGB actually lives. It is a WCH
+controller, not the mouse's RealTek, and shares nothing with the mouse protocol:
+frames are **not inverted**, and they go on **unnumbered output report 0**.
+
+```
+[0] 0xaa start   [1] cmd   [2] cmdType (0 request, 2 response)
+[3] frameSeq     [4] totalFrame        [5] paramLen        [6…] params
+```
+
+Replies use the same layout, so a reply's payload begins at offset 6.
+
+| Command | Purpose |
+| --- | --- |
+| `7` | read the lighting block |
+| `39` | write the lighting block |
+| `42`, `43` | unidentified |
+| `116`, `117` | firmware update (CRC8 poly 0x8c, 56-byte chunks) |
+
+### Lighting block
+
+Read payload, and the ten parameters command `39` takes back in the same order:
+
+| Offset | Field |
+| --- | --- |
+| 0 | on/off |
+| 1 | effect |
+| 2 | effect count (echo it back) |
+| 3 | speed, 0-4 |
+| 4 | brightness, 0-4 |
+| 5 | music sync |
+| 6-8 | base colour R, G, B |
+| 9 | direction |
+| 29 | direction, as reported |
+
+Effects, from MCHOSE's own enum: `0` static, `1` breathing, `2` shining,
+`3` colour cycling, `4` flow, `5` music.
+
+**There is no partial write** — command `39` takes the whole block, so a caller
+changing one field must send the rest as they were, including `effectCount`.
+
+Captured from a real MagDock, on colour cycling at brightness 2 with a red base
+colour:
+
+```
+aa 07 02 00 00 1e  01 03 06 02 02 00 ff 00 00 00 00 …
+                   ^on ^cycling ^count ^speed ^bright ^sync ^rgb(255,0,0)
+```
+
+Verified by echoing the block back (a no-op), then changing brightness and
+setting a static green, then restoring — every step read back and the block
+returned byte-identical.
+
+## Both links, confirmed
+
+The driver was exercised on an A7 V2 Ultra+ over **both** connections.
+
+| | 2.4 GHz receiver | USB cable |
+| --- | --- | --- |
+| Host-facing product id | `0x100b` (shared) | `0x4021` (model-specific) |
+| Live half of the byte pair | wireless (offset 2) | wired (offset 1) |
+| `chargeStatus` | `0` | `1` while charging |
+
+Which half is live follows from the product id: over a cable the host talks to
+the mouse itself, so the id is a model id; every other link enumerates under a
+shared receiver id. Confirmed by writing a polling change over the cable and
+watching **only** the wired byte move.
+
+With the mouse on its cable the receiver stays enumerated but has nothing behind
+it, so its config read simply fails — a driver must degrade rather than treat
+that as an error.

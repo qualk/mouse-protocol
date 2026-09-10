@@ -14,6 +14,7 @@ import {
   eggIsValidCpi,
   eggLodOptions,
   eggNormalizeFeatureReport,
+  eggProfileForPid,
   eggReadUint16LE,
   eggWriteEnabledCpiStages,
 } from "@openmouse/protocol/endgame-gear-op1";
@@ -38,6 +39,16 @@ test("OP1w 4K v2 wireless models are capped at 4000 Hz while wired 8K models kee
   assert.equal(op1v2.maxPollingHz, 8000);
   assert.equal(EGG_DEVICE_PROFILES.get(0x1984)!.maxPollingHz, 4000);
   assert.equal(EGG_DEVICE_PROFILES.get(0x1970)!.maxPollingHz, 4000);
+});
+
+test("the shared 4K v2 dongle PIDs report a neutral OP1w/XM2w name, since WebHID has no way to tell them apart", () => {
+  // Confirmed on real hardware: an XM2w 4K v2 reports device.productName as
+  // "Endgame Gear OP1we" — the receiver's fixed USB descriptor string, the
+  // same regardless of which mouse is actually paired. There is no signal
+  // available to resolve this to one specific model, so the name says both
+  // rather than confidently claiming the wrong one.
+  assert.equal(eggProfileForPid(0x1970).name, "Endgame Gear OP1w/XM2w 4K v2");
+  assert.equal(eggProfileForPid(0x1984).name, "Endgame Gear OP1w/XM2w 4K v2");
 });
 
 test("CPI ranges and quantization follow each sensor generation", () => {

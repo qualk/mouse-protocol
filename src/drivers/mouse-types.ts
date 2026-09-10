@@ -65,6 +65,12 @@ export interface MouseUiHints {
     maxDpi: number;
     stepDpi: number;
   };
+  /** Simple DPI indicator modes normalized as 0 off, 1 steady, 2 breathing. */
+  dpiLighting?: {
+    modes: readonly (0 | 1 | 2)[];
+    brightness: readonly number[];
+    speed: readonly number[];
+  };
 }
 
 /**
@@ -117,8 +123,28 @@ export type MouseLightingMode =
   | "Breathing single"
   | "Breathing dual";
 
+export interface AtkStoredButton {
+  id: "left" | "right" | "middle" | "back" | "forward" | "bottom";
+  name: string;
+  address: number;
+  keyClass: number;
+  value1: number;
+  value2: number;
+  checksumValid: boolean;
+  action: string;
+  raw: string;
+}
+
+export interface AtkReceiverInfo {
+  online: boolean;
+  status: number;
+  rfId: string;
+  pairingStatus: number | null;
+  pairingSecondsRemaining: number | null;
+}
+
 export interface MouseStatus {
-  brand: "Logitech" | "Pulsar" | "Endgame Gear" | "WLMouse" | "G-Wolves" | "Lamzu" | "CRDRAKO" | "Attack Shark" | "Orbital" | "Razer" | "Teevolution" | "ATK" | "VGN" | "Finalmouse" | "Keychron" | "moddoMOUSE" | "Ninjutso" | "Zaunkoenig" | "Fantech" | "Wooting" | "WALLHACK" | "SteelSeries" | "Glorious";
+brand: "Logitech" | "Pulsar" | "Endgame Gear" | "WLMouse" | "G-Wolves" | "Lamzu" | "CRDRAKO" | "Attack Shark" | "Orbital" | "Razer" | "Teevolution" | "ATK" | "VXE" | "VGN" | "Finalmouse" | "Keychron" | "moddoMOUSE" | "Ninjutso" | "Zaunkoenig" | "Fantech" | "Wooting" | "WALLHACK" | "SteelSeries" | "Glorious" | "MCHOSE" | "K-snake" | "Lingbao" | "GearHub" | "Corsair" | "Microsoft" | "HyperX";
   name: string;
   /** Driver-supplied UI policy (optional; keeps control.ts brand-agnostic). */
   ui?: MouseUiHints;
@@ -138,6 +164,37 @@ export interface MouseStatus {
   pollingRateHz: number;
   supportedPollingRates?: number[];
   activeProfile: number | null;
+  /** Number of firmware-managed ATK configuration banks, when readable. */
+  atkProfileCount?: number;
+  /** Lossless, read-only ATK button assignments from the active configuration bank. */
+  atkButtonMappings?: AtkStoredButton[];
+  /** Receiver and pairing telemetry. Pairing controls are intentionally separate. */
+  atkReceiver?: AtkReceiverInfo;
+  /**
+   * How many onboard profiles the device exposes, when it has a simple
+   * numbered set the user can switch between (distinct from Logitech's
+   * onboard-profile editor). Set together with a 1-based `activeProfile` and a
+   * `setProfile(index)` method, and the shared profile selector appears.
+   */
+  profileCount?: number;
+  /**
+   * Current button assignments, keyed by physical button name. Set together
+   * with `buttonOptions` and a `setButtonMapping(button, action)` method, and
+   * the shared button remapper appears. Distinct from the Razer and Endgame
+   * fields above, which predate this and carry brand-specific shapes.
+   */
+  buttonMappings?: Record<string, string>;
+  /**
+   * Named power/performance modes a device offers as a single choice, with
+   * `powerMode` holding the current one and a `setPowerMode(name)` method.
+   * Distinct from the boolean `performanceMode` above, which is a switch.
+   */
+  powerModes?: string[];
+  powerMode?: string;
+  /** Names for each onboard profile, when the device stores them. */
+  profileNames?: string[];
+  /** Every action `setButtonMapping` will accept, in display order. */
+  buttonOptions?: string[];
   deviceMode?: "Onboard" | "Host" | "Unknown";
   unitId?: string | null;
   modelId?: string | null;
@@ -156,6 +213,8 @@ export interface MouseStatus {
   motionSync?: boolean | null;
   /** On-device DPI stages, where supported (Teevolution, Ninjutso, …). */
   dpiStages?: number[];
+  /** RGB colour for each DPI stage, as lowercase #rrggbb. */
+  dpiStageColors?: string[];
   /** Active DPI stage index into `dpiStages` (0-based). */
   activeDpiStage?: number;
   ninjutsoSystemMode?: "High Speed" | "Competitive" | "Ultra" | null;
@@ -195,7 +254,16 @@ export interface MouseStatus {
   /** How many Nape onboard layers VIA reported. Undefined when unread. */
   napeLayerCount?: number;
   performanceMode?: boolean | null;
+  /**
+   * Long-range / far-distance radio mode: trades battery for link range on
+   * receivers that offer it (ATK calls it Ultra Long Range).
+   */
+  longRangeMode?: boolean | null;
   hyperMode?: boolean | null;
+  /** Sensor pinned to its highest frame rate (WLmouse "Turbo Mode"). */
+  turboMode?: boolean | null;
+  /** Whether button chords can change mouse settings without the driver. */
+  buttonCombination?: boolean | null;
   sensorMode?: "Eco" | "High" | "Ultra" | null;
   sensorModeStored?: 0 | 1 | null;
   sensorModeEditable?: boolean | null;
@@ -209,6 +277,22 @@ export interface MouseStatus {
   dpiLedBrightness?: number | null;
   dpiLedSpeed?: number | null;
   liftOffDistance: "Low" | "Medium" | "High" | null;
+  /**
+   * A single lift-off height the device tunes continuously, for mice whose
+   * firmware exposes a range rather than the three Low/Medium/High stops. The
+   * value and bounds are raw device codes; the millimetre figures are what the
+   * control labels. Drivers that only offer the stops leave this undefined, and
+   * a driver that sets it should still fill `liftOffDistance` with the nearest
+   * stop so anything reading the coarse field keeps working.
+   */
+  liftOffScale?: {
+    value: number;
+    min: number;
+    max: number;
+    millimetres: number;
+    minMillimetres: number;
+    maxMillimetres: number;
+  } | null;
   /** Explicit LOD choices when a mouse does not support all three common levels. */
   supportedLiftOffDistances?: Array<NonNullable<MouseStatus["liftOffDistance"]>>;
   /**
